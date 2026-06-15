@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>Chat App</title>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, sans-serif; }
+    body { display: flex; height: 100vh; background: #f5f5f5; }
+    #sidebar { width: 220px; background: #1e1e2e; color: #cdd6f4; display: flex; flex-direction: column; padding: 16px; gap: 12px; }
+    #sidebar h2 { font-size: 14px; color: #89b4fa; text-transform: uppercase; letter-spacing: 1px; }
+    #sidebar input { background: #313244; border: none; border-radius: 6px; padding: 8px; color: #cdd6f4; font-size: 13px; width: 100%; }
+    #sidebar button { background: #89b4fa; color: #1e1e2e; border: none; border-radius: 6px; padding: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
+    #sidebar button:hover { background: #74c7ec; }
+    #server-info { font-size: 11px; color: #6c7086; margin-top: auto; }
+    #main { flex: 1; display: flex; flex-direction: column; }
+    #chat-header { background: #fff; padding: 14px 20px; border-bottom: 1px solid #e0e0e0; font-weight: 600; color: #333; }
+    #messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+    .msg { max-width: 70%; padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.5; }
+    .msg.mine { align-self: flex-end; background: #89b4fa; color: #1e1e2e; border-bottom-right-radius: 2px; }
+    .msg.others { align-self: flex-start; background: #fff; color: #333; border: 1px solid #e0e0e0; border-bottom-left-radius: 2px; }
+    .msg.system { align-self: center; background: transparent; color: #888; font-size: 12px; font-style: italic; }
+    .msg-meta { font-size: 11px; opacity: 0.65; margin-top: 4px; }
+    #input-area { display: flex; gap: 8px; padding: 14px; background: #fff; border-top: 1px solid #e0e0e0; }
+    #msg-input { flex: 1; border: 1px solid #ddd; border-radius: 8px; padding: 10px 14px; font-size: 14px; outline: none; }
+    #msg-input:focus { border-color: #89b4fa; }
+    #send-btn { background: #89b4fa; color: #1e1e2e; border: none; border-radius: 8px; padding: 10px 20px; font-weight: 600; cursor: pointer; }
+    #send-btn:hover { background: #74c7ec; }
+    .connected { color: #a6e3a1; }
+    .disconnected { color: #f38ba8; }
+  </style>
+</head>
+<body>
+
+<div id="sidebar">
+  <h2>💬 Chat App</h2>
+  <div>
+    <label style="font-size:12px;color:#6c7086">Server URL</label>
+    <input id="server-url" value="http://localhost:3001" />
+  </div>
+  <div>
+    <label style="font-size:12px;color:#6c7086">Username</label>
+    <input id="username-input" placeholder="Tên của bạn" />
+  </div>
+  <div>
+    <label style="font-size:12px;color:#6c7086">Room</label>
+    <input id="room-input" value="general" />
+  </div>
+  <button id="connect-btn" onclick="connectToServer()">Kết nối</button>
+  <div id="server-info">
+    <div>Trạng thái: <span id="status" class="disconnected">Chưa kết nối</span></div>
+    <div id="handled-by" style="margin-top:4px;"></div>
+  </div>
+</div>
+
+<div id="main">
+  <div id="chat-header">Chọn server và join room để bắt đầu</div>
+  <div id="messages"></div>
+  <div id="input-area">
+    <input id="msg-input" placeholder="Nhập tin nhắn... (Enter để gửi)" onkeydown="if(event.key==='Enter') sendMessage()" disabled />
+    <button id="send-btn" onclick="sendMessage()" disabled>Gửi</button>
+  </div>
+</div>
+
+<script>
+let socket = null
+let currentRoom = null
+let myUsername  = null
+
+function connectToServer() {
+  const url      = document.getElementById('server-url').value
+  const username = document.getElementById('username-input').value.trim()
+  const room     = document.getElementById('room-input').value.trim()
+
+  if (!username || !room) { alert('Nhập username và room!'); return }
+
+  myUsername  = username
+  currentRoom = room
+
+  if (socket) socket.disconnect()
+
+  socket = io(url, { transports: ['websocket'] })
+
+  socket.on('connect', () => {
+    document.getElementById('status').textContent = 'Đã kết nối ✓'
+    document.getElementById('status').className = 'connected'
+    document.getElementById('chat-header').textContent = `Room: ${room}`
+    document.getElementById('msg-input').disabled  = false
+    document.getElementById('send-btn').disabled   = false
+
+    socket.emit('register', { username })
+    socket.emit('join_room', { room })
+  })
+
+  socket.on('disconnect', () => {
+    document.getElementById('status').textContent = 'Mất kết nối'
+    document.getElementById('status').className = 'disconnected'
+  })
+
+  socket.on('message_history', (messages) => {
+    document.getElementById('messages').innerHTML = ''
+    messages.forEach(addMessage)
+    scrollToBottom()
+  })
+
+  socket.on('new_message', (msg) => {
+    addMessage(msg)
+    // Hiển thị server nào xử lý tin nhắn (demo phân tán)
+    document.getElementById('handled-by').textContent = `Xử lý bởi: ${msg.serverHandled}`
+    scrollToBottom()
+  })
+
+  socket.on('user_joined', ({ username, serverHandled }) => {
+    addSystemMsg(`${username} đã vào room (qua ${serverHandled})`)
+  })
+
+  socket.on('user_left', ({ username }) => {
+    addSystemMsg(`${username} đã rời room`)
+  })
+}
+
+function addMessage(msg) {
+  const div  = document.createElement('div')
+  const time = new Date(msg.createdAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
+  const isMine = msg.sender === myUsername
+  div.className = `msg ${isMine ? 'mine' : 'others'}`
+  div.innerHTML = `
+    ${!isMine ? `<div class="msg-meta" style="font-weight:600">${msg.sender}</div>` : ''}
+    <div>${escHtml(msg.content)}</div>
+    <div class="msg-meta">${time}${msg.serverHandled ? ` · ${msg.serverHandled}` : ''}</div>
+  `
+  document.getElementById('messages').appendChild(div)
+}
+
+function addSystemMsg(text) {
+  const div = document.createElement('div')
+  div.className = 'msg system'
+  div.textContent = text
+  document.getElementById('messages').appendChild(div)
+  scrollToBottom()
+}
+
+function sendMessage() {
+  const input   = document.getElementById('msg-input')
+  const content = input.value.trim()
+  if (!content || !socket) return
+  socket.emit('send_message', { room: currentRoom, content })
+  input.value = ''
+}
+
+function scrollToBottom() {
+  const el = document.getElementById('messages')
+  el.scrollTop = el.scrollHeight
+}
+
+function escHtml(str) {
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+}
+</script>
+</body>
+</html>
