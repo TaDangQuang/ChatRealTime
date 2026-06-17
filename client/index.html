@@ -20,6 +20,7 @@
     .msg.mine { align-self: flex-end; background: #89b4fa; color: #1e1e2e; border-bottom-right-radius: 2px; }
     .msg.others { align-self: flex-start; background: #fff; color: #333; border: 1px solid #e0e0e0; border-bottom-left-radius: 2px; }
     .msg.system { align-self: center; background: transparent; color: #888; font-size: 12px; font-style: italic; }
+    .msg.system.warn { color: #f9a826; font-weight: 600; }
     .msg-meta { font-size: 11px; opacity: 0.65; margin-top: 4px; }
     #input-area { display: flex; gap: 8px; padding: 14px; background: #fff; border-top: 1px solid #e0e0e0; }
     #msg-input { flex: 1; border: 1px solid #ddd; border-radius: 8px; padding: 10px 14px; font-size: 14px; outline: none; }
@@ -28,6 +29,7 @@
     #send-btn:hover { background: #74c7ec; }
     .connected { color: #a6e3a1; }
     .disconnected { color: #f38ba8; }
+    .reconnecting { color: #f9a826; }
   </style>
 </head>
 <body>
@@ -36,7 +38,7 @@
   <h2>💬 Chat App</h2>
   <div>
     <label style="font-size:12px;color:#6c7086">Server URL</label>
-    <input id="server-url" value="http://localhost:3001" />
+    <input id="server-url" value="http://localhost:8080" />
   </div>
   <div>
     <label style="font-size:12px;color:#6c7086">Username</label>
@@ -79,7 +81,22 @@ function connectToServer() {
 
   if (socket) socket.disconnect()
 
-  socket = io(url, { transports: ['websocket'] })
+  // ─── Cấu hình reconnect ────────────────────────────────────────────────
+  // transports: ['websocket', 'polling'] -> cho phép fallback sang HTTP
+  // long-polling nếu WebSocket handshake gặp trục trặc ngay lúc server vừa
+  // failover (ví dụ Nginx đang trong giai đoạn đánh dấu server cũ "down").
+  // Bỏ giới hạn chỉ 'websocket' giúp quá trình bắt tay lại dễ thành công hơn.
+  //
+  // reconnection: true (mặc định đã bật, ghi rõ ra cho dễ hiểu)
+  // reconnectionDelay/Max: thời gian chờ giữa các lần thử lại, có backoff
+  // reconnectionAttempts: Infinity -> không bao giờ bỏ cuộc tự động
+  socket = io(url, {
+    transports: ['websocket', 'polling'],
+    reconnection: true,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000,
+    reconnectionAttempts: Infinity
+  })
 
   socket.on('connect', () => {
     document.getElementById('status').textContent = 'Đã kết nối ✓'
@@ -92,9 +109,41 @@ function connectToServer() {
     socket.emit('join_room', { room })
   })
 
-  socket.on('disconnect', () => {
-    document.getElementById('status').textContent = 'Mất kết nối'
+  // ─── Khi mất kết nối ────────────────────────────────────────────────────
+  socket.on('disconnect', (reason) => {
+    document.getElementById('status').textContent = 'Mất kết nối — đang thử lại...'
     document.getElementById('status').className = 'disconnected'
+    document.getElementById('msg-input').disabled = true
+    document.getElementById('send-btn').disabled  = true
+    addSystemMsg(`Mất kết nối tới server (${reason}). Đang tự động kết nối lại...`, true)
+  })
+
+  // ─── Đang trong quá trình thử kết nối lại ─────────────────────────────────
+  socket.io.on('reconnect_attempt', (attempt) => {
+    document.getElementById('status').textContent = `Đang kết nối lại... (lần ${attempt})`
+    document.getElementById('status').className = 'reconnecting'
+  })
+
+  // ─── QUAN TRỌNG: reconnect thành công -> phải JOIN LẠI ROOM ───────────────
+  // Đây là phần code còn thiếu trong bản gốc. Khi Socket.IO tự reconnect
+  // (ví dụ sau khi Nginx route bạn sang 1 server khác do server cũ sập),
+  // nó tạo ra 1 socket.id MỚI hoàn toàn -> server hoàn toàn không biết
+  // bạn từng ở room nào. Phải tự emit lại register + join_room.
+  socket.io.on('reconnect', (attempt) => {
+    document.getElementById('status').textContent = 'Đã kết nối lại ✓'
+    document.getElementById('status').className = 'connected'
+    document.getElementById('msg-input').disabled = false
+    document.getElementById('send-btn').disabled  = false
+    addSystemMsg(`Đã kết nối lại thành công sau ${attempt} lần thử. Đang vào lại room...`)
+
+    socket.emit('register', { username: myUsername })
+    socket.emit('join_room', { room: currentRoom })
+  })
+
+  socket.io.on('reconnect_failed', () => {
+    document.getElementById('status').textContent = 'Không thể kết nối lại'
+    document.getElementById('status').className = 'disconnected'
+    addSystemMsg('Đã thử kết nối lại nhiều lần nhưng không thành công. Kiểm tra server hoặc mạng.', true)
   })
 
   socket.on('message_history', (messages) => {
@@ -132,9 +181,9 @@ function addMessage(msg) {
   document.getElementById('messages').appendChild(div)
 }
 
-function addSystemMsg(text) {
+function addSystemMsg(text, isWarn) {
   const div = document.createElement('div')
-  div.className = 'msg system'
+  div.className = isWarn ? 'msg system warn' : 'msg system'
   div.textContent = text
   document.getElementById('messages').appendChild(div)
   scrollToBottom()
