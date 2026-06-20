@@ -81,15 +81,6 @@ function connectToServer() {
 
   if (socket) socket.disconnect()
 
-  // ─── Cấu hình reconnect ────────────────────────────────────────────────
-  // transports: ['websocket', 'polling'] -> cho phép fallback sang HTTP
-  // long-polling nếu WebSocket handshake gặp trục trặc ngay lúc server vừa
-  // failover (ví dụ Nginx đang trong giai đoạn đánh dấu server cũ "down").
-  // Bỏ giới hạn chỉ 'websocket' giúp quá trình bắt tay lại dễ thành công hơn.
-  //
-  // reconnection: true (mặc định đã bật, ghi rõ ra cho dễ hiểu)
-  // reconnectionDelay/Max: thời gian chờ giữa các lần thử lại, có backoff
-  // reconnectionAttempts: Infinity -> không bao giờ bỏ cuộc tự động
   socket = io(url, {
     transports: ['websocket', 'polling'],
     reconnection: true,
@@ -109,7 +100,6 @@ function connectToServer() {
     socket.emit('join_room', { room })
   })
 
-  // ─── Khi mất kết nối ────────────────────────────────────────────────────
   socket.on('disconnect', (reason) => {
     document.getElementById('status').textContent = 'Mất kết nối — đang thử lại...'
     document.getElementById('status').className = 'disconnected'
@@ -118,17 +108,11 @@ function connectToServer() {
     addSystemMsg(`Mất kết nối tới server (${reason}). Đang tự động kết nối lại...`, true)
   })
 
-  // ─── Đang trong quá trình thử kết nối lại ─────────────────────────────────
   socket.io.on('reconnect_attempt', (attempt) => {
     document.getElementById('status').textContent = `Đang kết nối lại... (lần ${attempt})`
     document.getElementById('status').className = 'reconnecting'
   })
 
-  // ─── QUAN TRỌNG: reconnect thành công -> phải JOIN LẠI ROOM ───────────────
-  // Đây là phần code còn thiếu trong bản gốc. Khi Socket.IO tự reconnect
-  // (ví dụ sau khi Nginx route bạn sang 1 server khác do server cũ sập),
-  // nó tạo ra 1 socket.id MỚI hoàn toàn -> server hoàn toàn không biết
-  // bạn từng ở room nào. Phải tự emit lại register + join_room.
   socket.io.on('reconnect', (attempt) => {
     document.getElementById('status').textContent = 'Đã kết nối lại ✓'
     document.getElementById('status').className = 'connected'
@@ -154,7 +138,6 @@ function connectToServer() {
 
   socket.on('new_message', (msg) => {
     addMessage(msg)
-    // Hiển thị server nào xử lý tin nhắn (demo phân tán)
     document.getElementById('handled-by').textContent = `Xử lý bởi: ${msg.serverHandled}`
     scrollToBottom()
   })
